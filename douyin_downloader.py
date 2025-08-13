@@ -12,7 +12,7 @@ import shutil
 
 
 class DouyinVideoDownloader:
-    def __init__(self, download_folder="douyin_videos", cookie_file="cookies.json"):
+    def __init__(self, download_folder="douyin_videos5", cookie_file="cookies.json"):
         self.download_folder = download_folder
         self.cookie_file = cookie_file
         self.session = requests.Session()
@@ -151,7 +151,7 @@ class DouyinVideoDownloader:
     def setup_session(self):
         """設置請求頭"""
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Linux; U; Android 9; zh-cn; Redmi Note 5 Build/PKQ1.180904.001) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/71.0.3578.141 Mobile Safari/537.36 XiaoMi/MiuiBrowser/11.10.8',
             'Accept': 'application/json, text/plain, */*',
             'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8',
             'Accept-Encoding': 'gzip, deflate, br',
@@ -245,7 +245,7 @@ class DouyinVideoDownloader:
             
             # 添加必要的cookies和headers
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Linux; U; Android 9; zh-cn; Redmi Note 5 Build/PKQ1.180904.001) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/71.0.3578.141 Mobile Safari/537.36 XiaoMi/MiuiBrowser/11.10.8',
                 'Accept': 'application/json, text/plain, */*',
                 'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8',
                 'Accept-Encoding': 'gzip, deflate, br',
@@ -301,7 +301,7 @@ class DouyinVideoDownloader:
             
             # 設置下載用的請求頭
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Linux; U; Android 9; zh-cn; Redmi Note 5 Build/PKQ1.180904.001) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/71.0.3578.141 Mobile Safari/537.36 XiaoMi/MiuiBrowser/11.10.8',
                 'Referer': 'https://www.douyin.com/',
             }
             
@@ -469,8 +469,8 @@ class DouyinVideoDownloader:
                 print(f'biggest: {sizes[0]}')
                 sizes.pop(0)
                 for (size , name) in sizes:
-                    if os.path.exists('douyin_videos/'+ name):
-                        os.remove(os.path.join('douyin_videos', name))
+                    if os.path.exists('douyin_videos2/'+ name):
+                        os.remove(os.path.join('douyin_videos2', name))
 
                 sizes = []
         
@@ -490,6 +490,14 @@ def main():
     # 用戶URL
     # user_url = "https://www.douyin.com/user/MS4wLjABAAAAhGTvofJSpb_dRb51A_xGF5siEeiHB2ryBSRZ9V0NtM7C-UgZ9ACJLTO7HwEGnFSE?from_tab_name=main"
     # user_url = "https://www.douyin.com/user/MS4wLjABAAAA4UAJ57hn-vBHuN-OF1D5fv66HG7QSEC9KcGE5UKO0McCgah4U6hqVNPZZUpN7YsW?from_tab_name=main"
+    # user_url = "https://www.douyin.com/user/MS4wLjABAAAASOZyC1TaCyf8fPZXxBiG67niXfFhkIZupGeJHE9S93Y?from_tab_name=main"
+    # user_url = "https://www.douyin.com/user/MS4wLjABAAAADw1dDJd4zddv0m8KWQB7ztFV0Nt8QzIK7dpFvbsrXss?from_tab_name=main"
+    # user_url = "https://www.douyin.com/user/MS4wLjABAAAAldMnLkHbNWaeczPl57exxGcU096_bdmDHxLaCh00gjpIpg3p6qKCjQcm5oHWlQ9u?from_tab_name=main"
+    # user_url = 'https://www.douyin.com/user/MS4wLjABAAAAUrd5Hx-0bX1j7dHzfK8nyijvrbQMrKlAhcAdb8NWSfKmRCgSD7MwWIzY2BAEYLcN?from_tab_name=main'
+    # user_url = 'https://www.douyin.com/user/MS4wLjABAAAAHz-Oepugg1914S5nJRfrnceErOymKZtwouCs1_RXCIs?from_tab_name=main'
+    user_url = 'https://www.douyin.com/user/MS4wLjABAAAAt1NymUQV3H2ZmBNoXbsus8J1NkVcGc31JO1YTGvwJxM?from_tab_name=main'
+
+    
     # 創建下載器實例
     downloader = DouyinVideoDownloader()
     

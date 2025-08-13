@@ -6,6 +6,7 @@ dist/
 wheels/
 *.egg-info
 douyin_videos/
+douyin_videos**/
 *.mp3
 *.mp4
 *.wav
