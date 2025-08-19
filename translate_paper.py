@@ -148,43 +148,72 @@ class HFTranslator(TranslatorBackend):
     """
     def __init__(self, model_name: Optional[str]=None):
         self.model_name = model_name or "facebook/m2m100_418M"
-        self.pipe = None
         self.tokenizer = None
         self.model = None
 
     def _ensure_loaded(self):
-        if self.pipe is not None or self.model is not None:
+        if self.tokenizer is not None and self.model is not None:
             return
-        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, pipeline
-        if "m2m100" in self.model_name:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
-        else:
-            # 其他 seq2seq（如 opus-mt-en-zh）
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
-        self.pipe = pipeline("translation", model=self.model, tokenizer=self.tokenizer, device_map="auto")
+        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
 
     def translate_list(self, texts: List[str], cfg: TranslateConfig) -> List[str]:
         self._ensure_loaded()
-        # M2M100 需要強制語言代碼
+        
         if "m2m100" in self.model_name:
+            # M2M100 需要特殊處理
             # 修正語言代碼
             tgt_lang = cfg.tgt_lang
             if tgt_lang in ["zh-TW", "zh-CN"]:
                 tgt_lang = "zh"
+            
             self.tokenizer.src_lang = cfg.src_lang
-        results = []
-        batch_size = 4
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i+batch_size]
-            if "m2m100" in self.model_name:
-                gen = self.pipe(batch, max_length=4096, forced_bos_token_id=self.tokenizer.get_lang_id(tgt_lang))
-            else:
-                gen = self.pipe(batch, max_length=4096)
-            for item in gen:
-                results.append(item["translation_text"])
-        return results
+            results = []
+            
+            for text in texts:  # 逐一處理，避免批次問題
+                # 編碼輸入，減少 max_length 避免過長序列
+                inputs = self.tokenizer(text, return_tensors="pt", max_length=512, truncation=True, padding=True)
+                # 移到同一設備
+                if hasattr(self.model, 'device'):
+                    inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+                
+                # 生成翻譯，調整參數減少重複
+                generated_tokens = self.model.generate(
+                    **inputs,
+                    forced_bos_token_id=self.tokenizer.get_lang_id(tgt_lang),
+                    max_length=512,
+                    num_beams=2,
+                    early_stopping=True,
+                    no_repeat_ngram_size=3,  # 避免 3-gram 重複
+                    repetition_penalty=1.2,  # 懲罰重複
+                    length_penalty=1.0
+                )
+                
+                # 解碼輸出
+                translated = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)[0]
+                results.append(translated)
+            
+            return results
+        else:
+            # 非 M2M100 模型，使用 pipeline 但確保長度限制
+            from transformers import pipeline
+            pipe = pipeline("translation", model=self.model, tokenizer=self.tokenizer, device_map="auto")
+            results = []
+            for text in texts:  # 逐一處理避免長度問題
+                # 檢查文本長度，如果太長則截斷
+                tokens = self.tokenizer.encode(text, add_special_tokens=False)
+                if len(tokens) > 400:  # 保留一些空間給特殊 tokens
+                    # 截斷並重新解碼
+                    truncated_tokens = tokens[:400]
+                    text = self.tokenizer.decode(truncated_tokens, skip_special_tokens=True)
+                
+                gen = pipe(text, max_length=512)
+                if isinstance(gen, list) and len(gen) > 0:
+                    results.append(gen[0]["translation_text"])
+                else:
+                    results.append(text)  # 如果翻譯失敗，返回原文
+            return results
 
 
 class OpenAITranslator(TranslatorBackend):
@@ -239,9 +268,9 @@ class DeepLTranslator(TranslatorBackend):
 # 主流程
 # ---------------------------
 
-def split_for_translation(paragraphs: List[str], max_chars: int=1800) -> List[str]:
+def split_for_translation(paragraphs: List[str], max_chars: int=800) -> List[str]:
     """
-    基於字數簡單分批；你可改為 token 級切分。
+    基於字數簡單分批，減少 max_chars 避免超過模型限制。
     """
     batches: List[str] = []
     buf = []
@@ -249,7 +278,25 @@ def split_for_translation(paragraphs: List[str], max_chars: int=1800) -> List[st
     for p in paragraphs:
         if not p.strip():
             continue
-        if size + len(p) > max_chars and buf:
+        # 如果單個段落就很長，需要進一步切分
+        if len(p) > max_chars:
+            # 先把之前累積的加入 batches
+            if buf:
+                batches.append("\n\n".join(buf))
+                buf = []
+                size = 0
+            # 將長段落按句子切分
+            sentences = re.split(r'(?<=[.!?])\s+', p)
+            current_chunk = ""
+            for sent in sentences:
+                if len(current_chunk) + len(sent) > max_chars and current_chunk:
+                    batches.append(current_chunk.strip())
+                    current_chunk = sent
+                else:
+                    current_chunk += " " + sent if current_chunk else sent
+            if current_chunk:
+                batches.append(current_chunk.strip())
+        elif size + len(p) > max_chars and buf:
             batches.append("\n\n".join(buf))
             buf = [p]
             size = len(p)
