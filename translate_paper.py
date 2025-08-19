@@ -32,6 +32,7 @@ import os
 import sys
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Optional
+import google.generativeai as genai
 
 # ---------------------------
 # 工具函式：偵測與處理數學式（mask/unmask）
@@ -79,7 +80,7 @@ def unmask_math(text: str, mapping: Dict[str, str]) -> str:
 # PDF 文字抽取
 # ---------------------------
 
-def extract_paragraphs_from_pdf(pdf_path: str, use_ocr: bool=False) -> List[str]:
+def extract_paragraphs_from_pdf(pdf_path: str, use_ocr: bool=True) -> List[str]:
     """
     以 PyMuPDF 盡量依閱讀順序抽文字；若 use_ocr 啟用，會用 pdf2image + pytesseract。
     回傳段落列表（空段落會被略過）。
@@ -147,7 +148,7 @@ class HFTranslator(TranslatorBackend):
     預設走 M2M100（可多語），若指定為 opus-mt-en-zh 則限英->中但較輕量。
     """
     def __init__(self, model_name: Optional[str]=None):
-        self.model_name = model_name or "facebook/m2m100_418M"
+        self.model_name = model_name or "Helsinki-NLP/opus-mt-en-zh"
         self.tokenizer = None
         self.model = None
 
@@ -163,7 +164,6 @@ class HFTranslator(TranslatorBackend):
         
         if "m2m100" in self.model_name:
             # M2M100 需要特殊處理
-            # 修正語言代碼
             tgt_lang = cfg.tgt_lang
             if tgt_lang in ["zh-TW", "zh-CN"]:
                 tgt_lang = "zh"
@@ -171,23 +171,31 @@ class HFTranslator(TranslatorBackend):
             self.tokenizer.src_lang = cfg.src_lang
             results = []
             
-            for text in texts:  # 逐一處理，避免批次問題
-                # 編碼輸入，減少 max_length 避免過長序列
-                inputs = self.tokenizer(text, return_tensors="pt", max_length=512, truncation=True, padding=True)
+            for text in texts:
+                # 先檢查並截斷過長的文本
+                tokens = self.tokenizer.encode(text, add_special_tokens=False)
+                if len(tokens) > 400:  # 保留空間給特殊 tokens
+                    truncated_tokens = tokens[:400]
+                    text = self.tokenizer.decode(truncated_tokens, skip_special_tokens=True)
+                
+                # 編碼輸入，設定較小的 max_length
+                inputs = self.tokenizer(text, return_tensors="pt", max_length=400, truncation=True, padding=True)
+                
                 # 移到同一設備
                 if hasattr(self.model, 'device'):
                     inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
                 
-                # 生成翻譯，調整參數減少重複
+                # 生成翻譯，調整參數
                 generated_tokens = self.model.generate(
                     **inputs,
                     forced_bos_token_id=self.tokenizer.get_lang_id(tgt_lang),
-                    max_length=512,
+                    max_new_tokens=400,  # 使用 max_new_tokens 而不是 max_length
                     num_beams=2,
                     early_stopping=True,
-                    no_repeat_ngram_size=3,  # 避免 3-gram 重複
-                    repetition_penalty=1.2,  # 懲罰重複
-                    length_penalty=1.0
+                    no_repeat_ngram_size=3,
+                    repetition_penalty=1.2,
+                    length_penalty=1.0,
+                    pad_token_id=self.tokenizer.eos_token_id
                 )
                 
                 # 解碼輸出
@@ -196,23 +204,38 @@ class HFTranslator(TranslatorBackend):
             
             return results
         else:
-            # 非 M2M100 模型，使用 pipeline 但確保長度限制
+            # 非 M2M100 模型的處理
             from transformers import pipeline
-            pipe = pipeline("translation", model=self.model, tokenizer=self.tokenizer, device_map="auto")
+            
+            # 使用較小的批次大小和更嚴格的長度限制
             results = []
-            for text in texts:  # 逐一處理避免長度問題
-                # 檢查文本長度，如果太長則截斷
+            for text in texts:
+                # 更嚴格的長度檢查
                 tokens = self.tokenizer.encode(text, add_special_tokens=False)
-                if len(tokens) > 400:  # 保留一些空間給特殊 tokens
-                    # 截斷並重新解碼
-                    truncated_tokens = tokens[:400]
+                if len(tokens) > 300:  # 更保守的限制
+                    truncated_tokens = tokens[:300]
                     text = self.tokenizer.decode(truncated_tokens, skip_special_tokens=True)
                 
-                gen = pipe(text, max_length=512)
-                if isinstance(gen, list) and len(gen) > 0:
-                    results.append(gen[0]["translation_text"])
-                else:
-                    results.append(text)  # 如果翻譯失敗，返回原文
+                # 每次只處理一個文本，避免批次問題
+                pipe = pipeline(
+                    "translation", 
+                    model=self.model, 
+                    tokenizer=self.tokenizer, 
+                    device_map="auto",
+                    max_length=400,
+                    truncation=True
+                )
+                
+                try:
+                    gen = pipe(text, max_length=400, truncation=True)
+                    if isinstance(gen, list) and len(gen) > 0:
+                        results.append(gen[0]["translation_text"])
+                    else:
+                        results.append(text)
+                except Exception as e:
+                    print(f"翻譯失敗: {e}, 返回原文")
+                    results.append(text)
+            
             return results
 
 
@@ -268,9 +291,9 @@ class DeepLTranslator(TranslatorBackend):
 # 主流程
 # ---------------------------
 
-def split_for_translation(paragraphs: List[str], max_chars: int=800) -> List[str]:
+def split_for_translation(paragraphs: List[str], max_chars: int=400) -> List[str]:  # 降低到 400
     """
-    基於字數簡單分批，減少 max_chars 避免超過模型限制。
+    基於字數簡單分批，使用更小的 max_chars 避免超過模型限制。
     """
     batches: List[str] = []
     buf = []
@@ -278,6 +301,7 @@ def split_for_translation(paragraphs: List[str], max_chars: int=800) -> List[str
     for p in paragraphs:
         if not p.strip():
             continue
+        
         # 如果單個段落就很長，需要進一步切分
         if len(p) > max_chars:
             # 先把之前累積的加入 batches
@@ -285,6 +309,7 @@ def split_for_translation(paragraphs: List[str], max_chars: int=800) -> List[str
                 batches.append("\n\n".join(buf))
                 buf = []
                 size = 0
+            
             # 將長段落按句子切分
             sentences = re.split(r'(?<=[.!?])\s+', p)
             current_chunk = ""
@@ -303,10 +328,10 @@ def split_for_translation(paragraphs: List[str], max_chars: int=800) -> List[str
         else:
             buf.append(p)
             size += len(p)
+    
     if buf:
         batches.append("\n\n".join(buf))
     return batches
-
 def build_backend(cfg: TranslateConfig) -> TranslatorBackend:
     if cfg.backend == "hf":
         return HFTranslator(model_name=cfg.hf_model)
@@ -356,24 +381,22 @@ def gemini_refine(msg: str) -> str:
     if not gemini_api_key:
         raise ValueError("請設定環境變數 GEMINI_API_KEY")
     headers = {"Authorization": f"Bearer {gemini_api_key}"}
-    msg = msg + '\n\n因為現在的內容可能有些生硬或不夠流暢。\n請幫我把以上文字稍微潤飾一下，使其更通順自然。'
-
-    response = requests.post("https://api.gemini.com/v1/translate", headers=headers, json={"text": msg})
-    if response.status_code != 200:
-        raise RuntimeError(f"Gemini API 錯誤：{response.text}")
-    return response.json().get("data", {}).get("translated_text", msg)
-
+    genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    prompt = msg + '\n\n因為現在的內容可能有些生硬或不夠流暢。\n請幫我把以上文字稍微潤飾一下，使其更通順自然。注意不要有任何其他多餘的回覆'
+    response = model.generate_content(prompt)
+    return response.text
 def main():
     ap = argparse.ArgumentParser(description="把 PDF 學術論文翻成繁體中文（含數學式保護）。")
     ap.add_argument("pdf", help="輸入 PDF 路徑")
     ap.add_argument("--out", required=True, help="輸出檔（.md 或 .docx）")
     ap.add_argument("--backend", choices=["hf", "openai", "deepl"], default="hf", help="翻譯後端（預設 hf）")
     ap.add_argument("--openai-model", default="gpt-4o-mini", help="OpenAI 模型名")
-    ap.add_argument("--hf-model", default=None, help="HF 模型名（預設 facebook/m2m100_418M；若英->中可用 Helsinki-NLP/opus-mt-en-zh）")
+    ap.add_argument("--hf-model", default=None, help="HF 模型名（預設 Helsinki-NLP/opus-mt-en-zh；若英->中可用 Helsinki-NLP/opus-mt-en-zh）也可以用 facebook/m2m100_418M ")
     ap.add_argument("--src", dest="src_lang", default="en", help="來源語言代碼（如 en、ja、de；M2M100 需要）")
     ap.add_argument("--tgt", dest="tgt_lang", default="zh-TW", help="目標語言代碼（M2M100 支援 zh-CN/zh-TW 等）")
-    ap.add_argument("--no-opencc", action="store_true", help="停用簡轉繁（台灣用語）")
-    ap.add_argument("--ocr", action="store_true", help="掃描型 PDF 開啟 OCR")
+    ap.add_argument("--no-opencc", default=True, action="store_true", help="停用簡轉繁（台灣用語）")
+    ap.add_argument("--ocr", default=True, action="store_true", help="掃描型 PDF 開啟 OCR")
     args = ap.parse_args()
 
     cfg = TranslateConfig(
@@ -389,7 +412,8 @@ def main():
     raw_paragraphs = extract_paragraphs_from_pdf(args.pdf, use_ocr=args.ocr)
     print(f'raw_paragraphs: {raw_paragraphs}')
     # 2) 先把段落合併為適中大小批次，且對每批做數學式 mask
-    batches = split_for_translation(raw_paragraphs, max_chars=1800)
+    batches = split_for_translation(raw_paragraphs, max_chars=600)  # 降低批次大小
+
 
     masked_batches = []
     math_maps = []
@@ -412,9 +436,6 @@ def main():
     out_paragraphs = []
     for b in restored:
         out_paragraphs.extend([p.strip() for p in re.split(r"\n\s*\n", b) if p.strip()])
-        # 6.5) 用gemini 稍微潤飾文句
-        temp = '\n'.join(out_paragraphs)
-        out_paragraphs = gemini_refine(temp)
 
     # 7) 寫出
     meta = {"source_pdf": os.path.abspath(args.pdf)}
@@ -424,6 +445,16 @@ def main():
         write_docx(out_paragraphs, args.out)
     else:
         raise ValueError("輸出副檔名需為 .md 或 .docx")
+
+
+
+    with open(args.out, "r", encoding="utf-8") as f:
+        data = f.read()
+
+    data = gemini_refine(data)
+
+    with open(args.out, "w", encoding="utf-8") as f:
+        f.write(data)
 
     print(f"✅ 完成：{args.out}")
 
