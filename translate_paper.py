@@ -349,6 +349,20 @@ def write_docx(paragraphs: List[str], out_path: str):
         doc.add_paragraph("")  # 空行
     doc.save(out_path)
 
+def gemini_refine(msg: str) -> str:
+    import os
+    import requests
+    gemini_api_key = os.environ.get("GEMINI_API_KEY")
+    if not gemini_api_key:
+        raise ValueError("請設定環境變數 GEMINI_API_KEY")
+    headers = {"Authorization": f"Bearer {gemini_api_key}"}
+    msg = msg + '\n\n因為現在的內容可能有些生硬或不夠流暢。\n請幫我把以上文字稍微潤飾一下，使其更通順自然。'
+
+    response = requests.post("https://api.gemini.com/v1/translate", headers=headers, json={"text": msg})
+    if response.status_code != 200:
+        raise RuntimeError(f"Gemini API 錯誤：{response.text}")
+    return response.json().get("data", {}).get("translated_text", msg)
+
 def main():
     ap = argparse.ArgumentParser(description="把 PDF 學術論文翻成繁體中文（含數學式保護）。")
     ap.add_argument("pdf", help="輸入 PDF 路徑")
@@ -373,7 +387,7 @@ def main():
 
     # 1) 讀 PDF -> 段落
     raw_paragraphs = extract_paragraphs_from_pdf(args.pdf, use_ocr=args.ocr)
-
+    print(f'raw_paragraphs: {raw_paragraphs}')
     # 2) 先把段落合併為適中大小批次，且對每批做數學式 mask
     batches = split_for_translation(raw_paragraphs, max_chars=1800)
 
@@ -398,6 +412,9 @@ def main():
     out_paragraphs = []
     for b in restored:
         out_paragraphs.extend([p.strip() for p in re.split(r"\n\s*\n", b) if p.strip()])
+        # 6.5) 用gemini 稍微潤飾文句
+        temp = '\n'.join(out_paragraphs)
+        out_paragraphs = gemini_refine(temp)
 
     # 7) 寫出
     meta = {"source_pdf": os.path.abspath(args.pdf)}
