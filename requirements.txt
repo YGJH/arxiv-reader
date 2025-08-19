@@ -1,0 +1,22 @@
+# 選你需要的後端裝就好（全部裝也可以，但會比較大）
+pymupdf>=1.24.0
+tqdm>=4.66.0
+opencc-python-reimplemented>=0.1.7
+
+# Hugging Face 本機翻譯（預設後端）。若用 OpenAI/DeepL 可省略以下幾行：
+transformers>=4.41.0
+sentencepiece>=0.1.99
+torch>=2.1.0
+
+# OCR（僅掃描 PDF 需要）
+pdf2image>=1.17.0
+pytesseract>=0.3.10
+
+# Docx 輸出（若要 .docx）
+python-docx>=1.1.0
+
+# OpenAI 後端（需 OPENAI_API_KEY）
+openai>=1.40.0
+
+# DeepL 後端（需 DEEPL_API_KEY）
+deepl>=1.17.0
