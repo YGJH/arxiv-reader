@@ -395,7 +395,7 @@ def main():
     ap.add_argument("--hf-model", default=None, help="HF 模型名（預設 Helsinki-NLP/opus-mt-en-zh；若英->中可用 Helsinki-NLP/opus-mt-en-zh）也可以用 facebook/m2m100_418M ")
     ap.add_argument("--src", dest="src_lang", default="en", help="來源語言代碼（如 en、ja、de；M2M100 需要）")
     ap.add_argument("--tgt", dest="tgt_lang", default="zh-TW", help="目標語言代碼（M2M100 支援 zh-CN/zh-TW 等）")
-    ap.add_argument("--no-opencc", default=True, action="store_true", help="停用簡轉繁（台灣用語）")
+    ap.add_argument("--no-opencc", default=False, action="store_true", help="停用簡轉繁（台灣用語）")
     ap.add_argument("--ocr", default=True, action="store_true", help="掃描型 PDF 開啟 OCR")
     args = ap.parse_args()
 
@@ -447,14 +447,25 @@ def main():
         raise ValueError("輸出副檔名需為 .md 或 .docx")
 
 
-
+    # 8) 使用 Gemini API 進行內容潤飾
     with open(args.out, "r", encoding="utf-8") as f:
         data = f.read()
 
     data = gemini_refine(data)
 
+    # 9) Gemini 潤飾後再次進行簡轉繁處理（因為 Gemini 可能會輸出簡體中文）
+    if cfg.use_opencc:
+        try:
+            import opencc
+            conv = opencc.OpenCC(cfg.opencc_config)
+            data = conv.convert(data)
+            print("✅ 已完成 Gemini 潤飾後的簡轉繁處理")
+        except Exception as e:
+            print(f"警告：Gemini 潤飾後的簡轉繁處理失敗：{e}", file=sys.stderr)
+
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(data)
+
 
     print(f"✅ 完成：{args.out}")
 
