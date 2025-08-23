@@ -12,7 +12,7 @@ import shutil
 
 
 class DouyinVideoDownloader:
-    def __init__(self, download_folder="douyin_videos5", cookie_file="cookies.json"):
+    def __init__(self, download_folder="douyin_videos6", cookie_file="cookies.json"):
         self.download_folder = download_folder
         self.cookie_file = cookie_file
         self.session = requests.Session()
@@ -469,8 +469,8 @@ class DouyinVideoDownloader:
                 print(f'biggest: {sizes[0]}')
                 sizes.pop(0)
                 for (size , name) in sizes:
-                    if os.path.exists('douyin_videos2/'+ name):
-                        os.remove(os.path.join('douyin_videos2', name))
+                    if os.path.exists(self.download_folder+ name):
+                        os.remove(os.path.join(self.download_folder , name))
 
                 sizes = []
         
@@ -495,9 +495,10 @@ def main():
     # user_url = "https://www.douyin.com/user/MS4wLjABAAAAldMnLkHbNWaeczPl57exxGcU096_bdmDHxLaCh00gjpIpg3p6qKCjQcm5oHWlQ9u?from_tab_name=main"
     # user_url = 'https://www.douyin.com/user/MS4wLjABAAAAUrd5Hx-0bX1j7dHzfK8nyijvrbQMrKlAhcAdb8NWSfKmRCgSD7MwWIzY2BAEYLcN?from_tab_name=main'
     # user_url = 'https://www.douyin.com/user/MS4wLjABAAAAHz-Oepugg1914S5nJRfrnceErOymKZtwouCs1_RXCIs?from_tab_name=main'
-    user_url = 'https://www.douyin.com/user/MS4wLjABAAAAt1NymUQV3H2ZmBNoXbsus8J1NkVcGc31JO1YTGvwJxM?from_tab_name=main'
+    # user_url = 'https://www.douyin.com/user/MS4wLjABAAAAUrd5Hx-0bX1j7dHzfK8nyijvrbQMrKlAhcAdb8NWSfKmRCgSD7MwWIzY2BAEYLcN?from_tab_name=main'
+    # user_url = 'https://www.douyin.com/user/MS4wLjABAAAAVXxt9gPs7b2F_xpS0yMapJhFR3jN4aK9ptZ7_YVeB_M?from_tab_name=main'
+    user_url = 'https://www.douyin.com/user/MS4wLjABAAAAj8_YMsUZglM9qYJXuZwrbT3gEpQqiW7aF6d4jpdFE1xGyDind6FkrRoUd2OjkOkF'    
 
-    
     # 創建下載器實例
     downloader = DouyinVideoDownloader()
     

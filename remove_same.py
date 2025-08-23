@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 import argparse, os, sys, itertools, math
-import cv2
+try:
+    import cv2
+    HAVE_CV2 = True
+except Exception:
+    cv2 = None
+    HAVE_CV2 = False
 from PIL import Image
 import imagehash
 from collections import defaultdict
-import subprocess, json
+import subprocess, json, shutil, io, hashlib
+from scipy.fft import fft
+
 
 # 抑制 OpenCV 日誌
 try:
@@ -13,6 +20,8 @@ except Exception:
     pass
 
 def get_duration(cap):
+    if not HAVE_CV2 or cap is None:
+        return None
     fps = cap.get(cv2.CAP_PROP_FPS) or 0
     frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
     if fps > 0 and frames > 0:
@@ -26,6 +35,8 @@ def sample_timestamps(duration, n=8):
     return [duration * (i + 1) / (n + 1) for i in range(n)]
 
 def grab_frame_at(cap, t_sec):
+    if not HAVE_CV2 or cap is None:
+        return None
     cap.set(cv2.CAP_PROP_POS_MSEC, t_sec * 1000.0)
     ok, frame = cap.read()
     if not ok or frame is None:
@@ -34,48 +45,162 @@ def grab_frame_at(cap, t_sec):
     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
 def phash_image(arr):
-    img = Image.fromarray(arr)
-    return imagehash.phash(img)  # 64-bit
+    # Accept either a NumPy array (from OpenCV) or a PIL Image
+    try:
+        if isinstance(arr, Image.Image):
+            img = arr.convert("RGB")
+        else:
+            img = Image.fromarray(arr)
+        return imagehash.phash(img)  # 64-bit
+    except Exception:
+        raise
+
+
+def get_duration_ffprobe(path: str):
+    """Return duration in seconds via ffprobe, or None on failure."""
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode != 0:
+            return None
+        out = (proc.stdout or "").strip()
+        try:
+            return float(out)
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def grab_frame_ffmpeg(path: str, t_sec: float):
+    """Use ffmpeg to extract one frame at t_sec and return a PIL.Image or None."""
+    if not shutil.which("ffmpeg"):
+        return None
+    # Fast seek: -ss before -i
+    cmd = [
+        "ffmpeg",
+        "-hide_banner", "-loglevel", "error",
+        "-ss", str(t_sec),
+        "-i", path,
+        "-frames:v", "1",
+        "-f", "image2pipe",
+        "-vcodec", "png",
+        "-",
+    ]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+        if proc.returncode != 0 or not proc.stdout:
+            return None
+        bio = io.BytesIO(proc.stdout)
+        img = Image.open(bio).convert("RGB")
+        return img
+    except Exception:
+        return None
 
 def video_signature(path, samples=8, max_fail_ratio=0.5):
-    cap = cv2.VideoCapture(path)
-    if not cap.isOpened():
-        return None
-    # 先讀取首幀驗證可讀性
-    try:
-        cap.set(cv2.CAP_PROP_POS_MSEC, 0)
-        ok0, f0 = cap.read()
-        if not ok0 or f0 is None:
-            cap.release()
-            return None
-        # 重置到開頭
-        cap.set(cv2.CAP_PROP_POS_MSEC, 0)
-    except Exception:
-        cap.release()
-        return None
+    use_ffmpeg_fallback = False
+    cap = None
+    from scipy.fft import fft
+    if HAVE_CV2:
+        try:
+            cap = cv2.VideoCapture(path)
+            if not cap.isOpened():
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+                cap = None
+                use_ffmpeg_fallback = True
+            else:
+                # Try a quick read to ensure OpenCV can decode
+                try:
+                    cap.set(cv2.CAP_PROP_POS_MSEC, 0)
+                    ok0, f0 = cap.read()
+                    if not ok0 or f0 is None:
+                        try:
+                            cap.release()
+                        except Exception:
+                            pass
+                        cap = None
+                        use_ffmpeg_fallback = True
+                    else:
+                        cap.set(cv2.CAP_PROP_POS_MSEC, 0)
+                except Exception:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                    cap = None
+                    use_ffmpeg_fallback = True
+        except Exception:
+            cap = None
+            use_ffmpeg_fallback = True
+    else:
+        use_ffmpeg_fallback = True
 
-    duration = get_duration(cap)
-    ts = sample_timestamps(duration, samples)
     hashes = []
     wh = None
+
+    if not use_ffmpeg_fallback:
+        duration = get_duration(cap)
+        ts = sample_timestamps(duration, samples)
+        fail = 0
+        for t in ts:
+            frame = grab_frame_at(cap, t)
+            if frame is None:
+                fail += 1
+                continue
+            if wh is None:
+                h, w = frame.shape[:2]
+                wh = (w, h)
+            hashes.append(phash_image(frame))
+        try:
+            cap.release()
+        except Exception:
+            pass
+        if hashes:
+            return {
+                "duration": duration or 0.0,
+                "hashes": hashes,
+                "wh": wh
+            }
+        # otherwise fall through to ffmpeg fallback
+
+    # Fallback using ffmpeg (if available)
+    if not shutil.which("ffmpeg"):
+        return get_basic_sig_ffprobe(path)
+    duration = get_duration_ffprobe(path) or 0.0
+    ts = sample_timestamps(duration, samples)
     fail = 0
+    hashes = []
+    wh = None
     for t in ts:
-        frame = grab_frame_at(cap, t)
-        if frame is None:
+        pil = grab_frame_ffmpeg(path, t)
+        if pil is None:
             fail += 1
             continue
         if wh is None:
-            h, w = frame.shape[:2]
-            wh = (w, h)
-        hashes.append(phash_image(frame))
-    cap.release()
-    if not hashes or fail / max(1, len(ts)) > max_fail_ratio:
-        return None
-    return {
-        "duration": duration or 0.0,
-        "hashes": hashes,
-        "wh": wh
-    }
+            wh = pil.size  # (w, h)
+        hashes.append(phash_image(pil))
+    if hashes:
+        return {
+            "duration": duration or 0.0,
+            "hashes": hashes,
+            "wh": wh
+        }
+    else:
+        return get_basic_sig_ffprobe(path)
+
 
 def phash_distance(sigA, sigB):
     # 以對齊索引取最短長度計算平均距離
@@ -83,8 +208,76 @@ def phash_distance(sigA, sigB):
     n = min(len(a), len(b))
     if n == 0:
         return math.inf
-    dists = [a[i] - b[i] for i in range(n)]
+
+    def to_int(h):
+        # imagehash.ImageHash -> int, or int stays int
+        try:
+            # ImageHash has __str__ as hex representation
+            if hasattr(h, "__str__") and not isinstance(h, int):
+                return int(str(h), 16)
+        except Exception:
+            pass
+        try:
+            return int(h)
+        except Exception:
+            return 0
+
+    dists = []
+    for i in range(n):
+        ha, hb = a[i], b[i]
+        if (hasattr(ha, "__sub__") and hasattr(hb, "__sub__") and not isinstance(ha, int) and not isinstance(hb, int)):
+            # prefer imagehash subtraction if both are imagehash.ImageHash
+            try:
+                d = ha - hb
+                dists.append(d)
+                continue
+            except Exception:
+                pass
+        ia, ib = to_int(ha), to_int(hb)
+        xor = ia ^ ib
+        # popcount
+        dists.append(xor.bit_count())
     return sum(dists) / n
+
+
+def get_basic_sig_ffprobe(path: str):
+    """Return a minimal signature using ffprobe and file-md5 when frame extraction fails."""
+    try:
+        proc = subprocess.run([
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-show_entries", "format=duration",
+            "-of", "json",
+            path,
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        if proc.returncode != 0:
+            return None
+        data = json.loads(proc.stdout or "{}")
+        fmt = data.get("format", {})
+        dur = None
+        try:
+            dur = float(fmt.get("duration", 0))
+        except Exception:
+            dur = 0.0
+        streams = data.get("streams", [])
+        w = h = 0
+        for s in streams:
+            if s.get("width") and s.get("height"):
+                w = int(s.get("width", 0))
+                h = int(s.get("height", 0))
+                break
+        # compute small md5 of first 64k to serve as a crude hash
+        try:
+            with open(path, "rb") as f:
+                b = f.read(65536)
+                m = hashlib.md5(b).hexdigest()
+                m_int = int(m, 16)
+        except Exception:
+            m_int = 0
+        return {"duration": dur or 0.0, "hashes": [m_int], "wh": (w, h)}
+    except Exception:
+        return None
 
 def group_by_duration(paths, sigs, tol=0.5):
     buckets = defaultdict(list)
@@ -140,7 +333,7 @@ def ffprobe_ok(path: str) -> bool:
     except Exception:
         return False
 
-def find_near_duplicates(root, samples=8, duration_tol=0.5, phash_thr=8, ffprobe_validate=False):
+def find_near_duplicates(root, samples=4, duration_tol=0.5, phash_thr=8, ffprobe_validate=False):
     # 掃描影片檔
     exts = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm"}
     paths = []
@@ -164,9 +357,9 @@ def find_near_duplicates(root, samples=8, duration_tol=0.5, phash_thr=8, ffprobe
                 sigs[p] = sig
             else:
                 bads.append(p)
-        except Exception:
+        except Exception as e:
+            print(f"Error processing {p}: {e}")
             bads.append(p)
-
     # 依時長分桶後，做近似比對
     dup_groups = []  # 每組為近似重複的一群檔案
     visited = set()
